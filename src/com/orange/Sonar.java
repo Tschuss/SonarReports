@@ -48,11 +48,25 @@ public class Sonar {
 	
 	static Set<String> excluded = new HashSet<>();
 
+	static boolean debug=false;
+	static boolean error=false;
+	
 	public static void main(String[] args) {
 		
-		String text="COMPONENTE;REPO;VERSION;GATE;BLOCKING;CRITICAL;DUPLICATION;COMPLEXITY";
+		for (int i=0;i<args.length;i++) {
+			switch (args[i].toUpperCase()) {
+				case "DEBUG": debug=true;break;
+				case "ERROR": error=true;break;
+				default: System.out.println("argunmento invalido: "+args[i]);break;
+			}
+		}
+		debug=(args.length>0); //si hay un argumento, es para el debug :-)
+		
+		String text="REPO;COMPONENTE;VERSION;GATE;BLOCKING;CRITICAL;DUPLICATION;COMPLEXITY";
 	
 		excluded.add("ARCH_ANGULAR_COMPONENT_BASE"); //POC de arquitectura
+		excluded.add("PDV_ANG_SPA_PARRAS"); //POC de arquitectura
+		
 		
 		try {
 			Map<String, String> projectsMap=getGitLab("projects?search=_ANG", true);
@@ -63,27 +77,26 @@ public class Sonar {
 				//arreglamos el JSON generado
 				projectsStr=projectsStr.substring(0, projectsStr.indexOf("]["))+","+projectsStr.substring(projectsStr.indexOf("][")+2);
 			}
-			//System.out.println(projectsStr);
+			if (debug) System.out.println(projectsStr);
 
 			//hay que completar el Json para que el parser lo entienda...
 			JSONObject json = new JSONObject("{'projects':"+projectsStr+"}");
 			JSONArray projectsArray = json.getJSONArray("projects");
-			System.out.println("#repos="+projectsArray.length());
+			if (debug) System.out.println("#repos="+projectsArray.length());
 			for (int i=0; i<projectsArray.length();i++) {
 				JSONObject project= (JSONObject)projectsArray.get(i);
 				String name=project.getString("name");
 				if (!excluded.contains(name)) {
-					//System.out.println(name);
+					//if (debug) System.out.println(name);
 					int id=project.getInt("id");
 					projects.put(String.valueOf(id),name);
 					text+=getComponentInfo (name, id);		
 				} else {
-					System.err.println("["+name+"] se excluye del analisis...");
+					if (error) System.err.println("["+name+"] se excluye del analisis...");
 				}
 			}
 
 		} catch (IOException e1) {
-			// TODO Auto-generated catch block
 			e1.printStackTrace();
 		}
 		
@@ -96,8 +109,8 @@ public class Sonar {
 		String csv="\n";
 		try {
 			Map<String, String> gitlab = parseComponentName(project, id);
-			csv+=gitlab.get("name");
-			csv+=";"+project;
+			csv+=project;
+			csv+=";"+gitlab.get("name");
 			csv+=";"+gitlab.get("version");
 	
 			Map<String, String> sonar= getSonarResults(project);
@@ -109,7 +122,7 @@ public class Sonar {
 			
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
-			System.err.println(e.getMessage());
+			if (error) System.err.println(e.getMessage());
 		}
 		return csv;
 	}
@@ -117,88 +130,51 @@ public class Sonar {
 	static Map<String, String> parseComponentName(String project, int id) {
 		
 		String content="";
-		String branch=MASTER_BRANCH;
 		String file="package.json";
 		HashMap<String, String> map= new HashMap<>();
 		try {		
 			try {
 				//intentamos coger la version de produccion la primera
-				content = getGitLabFile(id, file, branch,false);
-			} catch (FileNotFoundException e) {
-				System.err.println(e.getMessage());
+				content = getGitLabFile(id, file, MASTER_BRANCH, false);
+				map.put("branch", MASTER_BRANCH);
+			} catch (FileNotFoundException master) {
+				if (debug) System.out.println(master.getMessage());
 				try {
 					//si no, cogemos la de UAT
-					branch=RELEASE_BRANCH;
-					content = getGitLabFile(id, file, branch,false);
-				} catch (FileNotFoundException ee) {
-					System.err.println(e.getMessage());
+					content = getGitLabFile(id, file, RELEASE_BRANCH, false);
+					map.put("branch", RELEASE_BRANCH);
+				} catch (FileNotFoundException release) {
+					if (debug) System.out.println(release.getMessage());
 					try {
 						//por ultimo cogemos la de desarrollo
-						branch=DEVELOP_BRANCH;
-						content = getGitLabFile(id, file, branch,false);
-					} catch (FileNotFoundException eee) {
-						System.err.println(eee.getMessage());
+						content = getGitLabFile(id, file, DEVELOP_BRANCH, false);
+						map.put("branch", DEVELOP_BRANCH);
+					} catch (FileNotFoundException develop) {
+						if (debug) System.out.println(develop.getMessage());
+						map.put("name", "package.json no encontrado");
 						return map;
 					}
 				}
 			}
-			//System.out.println(content);
+			//if (debug) System.out.println(content);
 			try {
 				JSONObject json = new JSONObject(content);
 				map.put("name", json.getString("name"));
+				map.put("version", json.getString("version"));
 			} catch (JSONException je) {
-				System.err.println(je.getMessage());
+				if (debug) System.out.println("ERROR JSON ["+project+"]: "+je.getMessage());
+				map.put("name",je.getMessage());
 			}
 
-			//System.out.println(csv);
-		} catch (IOException eee) {
-			System.err.println(eee.getMessage());
-		}
+			//if (debug) System.out.println(csv);
+		} catch (IOException io) {
+			if (error) System.err.println(io.getMessage());
+			map.put("name",io.getMessage());
+	}
 		return map;	
 
 	}
 	
-	static String parseInnerComponents(String project, int id, String file) {
-		
-		String csv="";
-		String content="";
-		String branch=MASTER_BRANCH;
-		
-		try {		
-			try {
-
-				content = getGitLabFile(id, file, branch,false);
-			} catch (FileNotFoundException e) {
-				System.err.println(e.getMessage());
-				try {
-					branch=DEVELOP_BRANCH;
-					content = getGitLabFile(id, file, branch, false);
-				} catch (FileNotFoundException ee) {
-					System.err.println(ee.getMessage());
-					content="";
-				}
-			}
-
-			//parserar el typescript
-			int a=content.indexOf("app-components");
-			if (a>0) {
-				int b = content.indexOf("'", a+15); //comilla antes del componente
-				while (b>0) {
-					int c = content.indexOf("'", b+1); //comilla despues del componente
-					String name = content.substring(b+1, c);
-					//System.out.println(name);
-					csv+="\n"+project+";"+name+";-1;"+branch+";NO";
-					b=content.indexOf("'", c+1);
-				} 
-			}
-
-		} catch (IOException eee) {
-			System.err.println(eee.getMessage());
-		}
-		return csv;	
-
-	}
-
 	static String getGitLabFile (int id, String file, String branch, boolean v4) throws IOException {
 		String urlFile=URLEncoder.encode(file, "UTF-8");
 		
@@ -219,7 +195,7 @@ public class Sonar {
 		con.setRequestProperty("PRIVATE-TOKEN", "nMW2c2Tjsxp5m-zqnZaG");
 
 		int responseCode = con.getResponseCode();
-		//System.out.println("\nSending 'GET' request to URL : " + url);
+		//if (debug) System.out.println("\nSending 'GET' request to URL : " + url);
 		if (responseCode != 200) {
 			throw new FileNotFoundException("Archivo ["+file+"] no encontrado en la rama ["+branch+"] del proyecto ["+projects.get(String.valueOf(id))+"]: http ["+url+"] error code: "+responseCode);
 		} else {
@@ -232,7 +208,7 @@ public class Sonar {
 			}
 			in.close();
 			//print result
-			//System.out.println(response.toString());
+			if (debug) System.out.println(response.toString());
 			if (v4) {
 				return response.toString();
 			} else {//v3
@@ -240,7 +216,7 @@ public class Sonar {
 				String content=json.getString("content");
 				byte bytes[]=content.getBytes();
 				byte[] valueDecoded = Base64.getDecoder().decode(bytes);
-				//System.out.println("Decoded value is " + new String(valueDecoded));	
+				if (debug) System.out.println("Decoded value is " + new String(valueDecoded));	
 				return new String(valueDecoded);
 			}
 		}
@@ -279,27 +255,27 @@ public class Sonar {
 			in.close();
 			gitlab+=response.toString();
 			//print gitlab
-			//System.out.println("JSON => "+gitlab);
+			if (debug) System.out.println("JSON => "+gitlab);
 			answer.put("gitlab", gitlab);
 			
 			//miramos si está paginado y hay más paginas
 			Map<String, List<String>> headers = con.getHeaderFields();
-			//System.out.println("\nSending 'GET' request to URL : " + url + "headers: "+headers);
+			if (debug) System.out.println("\nSending 'GET' request to URL : " + url + "headers: "+headers);
 			List<String> links = headers.get("Link");
-			//System.out.println(links);
+			if (debug) System.out.println(links);
 			String[] nexts=links.get(0).split(",|;");
 			for (int i=0;i<nexts.length;i++) {
 				if (nexts[i].indexOf("next")>0) {
 					next=nexts[i-1].substring(1, nexts[i-1].length()-1);		
 					next= next.substring(next.indexOf("projects?"));
-					//System.err.println("Next="+next);
+					if (error) System.err.println("Next="+next);
 					answer.put("next", next);
 					break;
 				} else {
-					//System.err.println("No hay Next");
+					if (debug) System.out.println("No hay Next");
 				}
 		    }
-			//System.out.println("Headers => "+answer.toString());
+			if (debug) System.out.println("Headers => "+answer.toString());
 			return answer;
 			
 		}
@@ -337,7 +313,7 @@ public class Sonar {
 			in.close();
 			sonar+=response.toString();
 		}
-		//System.out.println(sonar);
+		if (debug) System.out.println(sonar);
 
 		JSONObject json = new JSONObject(sonar);
 		JSONObject component= json.getJSONObject("component");
@@ -370,7 +346,7 @@ public class Sonar {
 			in.close();
 			gates+=response.toString();
 		}
-		//System.out.println(gates);
+		if (debug) System.out.println(gates);
 		
 		json = new JSONObject(gates);
 		JSONObject projectStatus= json.getJSONObject("projectStatus");
@@ -383,7 +359,7 @@ public class Sonar {
 				result.put("blocking", conditions.getJSONObject(i).getString("actualValue"));
 				break;
 			case SONAR_CRITICAL:
-				result.put("blocking", conditions.getJSONObject(i).getString("actualValue"));
+				result.put("critical", conditions.getJSONObject(i).getString("actualValue"));
 				break;
 			case SONAR_DUPLICATION:
 				result.put("duplication", conditions.getJSONObject(i).getString("actualValue"));
@@ -397,7 +373,6 @@ public class Sonar {
 			case SONAR_DEBT_RATIO:
 				result.put("debt", conditions.getJSONObject(i).getString("actualValue"));
 				break;
-
 			}	
 		}
 		return result;
